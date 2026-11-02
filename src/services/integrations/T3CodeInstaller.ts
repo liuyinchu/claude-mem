@@ -87,12 +87,16 @@ export function discoverT3CodeProviders(settingsPath: string, baseEnv: NodeJS.Pr
     return [id, value];
   });
   for (const driver of ['codex', 'claudeAgent'] as const) {
-    if (Object.hasOwn(instances, driver) || !Object.hasOwn(legacy, driver)) continue;
-    if (!isRecord(legacy[driver])) throw new Error(`Invalid T3 Code ${driver} settings.`);
-    entries.push([driver, { driver, config: legacy[driver] }]);
+    if (Object.hasOwn(instances, driver)) continue;
+    if (Object.hasOwn(legacy, driver)) {
+      if (!isRecord(legacy[driver])) throw new Error(`Invalid T3 Code ${driver} settings.`);
+      entries.push([driver, { driver, config: legacy[driver] }]);
+    } else {
+      // T3 enables both default instances even when other entries are persisted.
+      // Absence is not a disabled flag (e.g. Codex off, default Claude on).
+      entries.push([driver, { driver }]);
+    }
   }
-  // A newly initialized settings document may not yet persist provider defaults.
-  if (entries.length === 0 && Object.keys(legacy).length === 0) entries.push(['codex', { driver: 'codex' }]);
 
   const providers: T3CodeProvider[] = [];
   for (const [id, instance] of entries) {

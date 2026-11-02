@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, spyOn } from 'bun:test';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import {
@@ -114,10 +114,32 @@ describe('T3 Code provider discovery', () => {
     expect(provider.homePath).toBe(resolve('/shared'));
   });
 
-  it('uses a default Codex provider for an initialized empty document and accepts BOMs', () => {
+  it('uses both enabled default providers for an initialized empty document and accepts BOMs', () => {
     const { settingsPath } = fixture({});
     writeFileSync(settingsPath, '\uFEFF{}');
-    expect(discoverT3CodeProviders(settingsPath)[0].id).toBe('codex');
+    expect(discoverT3CodeProviders(settingsPath).map(provider => provider.id)).toEqual(['codex', 'claudeAgent']);
+  });
+
+  it.each(['codex', 'claudeAgent'])('discovers the implicit default when only %s is explicitly disabled (#5262)', disabled => {
+    const { settingsPath } = fixture({ providerInstances: { [disabled]: { driver: disabled, enabled: false } } });
+    const before = readFileSync(settingsPath, 'utf-8');
+    expect(discoverT3CodeProviders(settingsPath).map(provider => provider.id))
+      .toEqual([disabled === 'codex' ? 'claudeAgent' : 'codex']);
+    expect(readFileSync(settingsPath, 'utf-8')).toBe(before);
+  });
+
+  it('retains implicit defaults alongside unrelated provider instances', () => {
+    const { settingsPath } = fixture({ providerInstances: { other: { driver: 'custom-provider' } } });
+    expect(discoverT3CodeProviders(settingsPath).map(provider => provider.id)).toEqual(['codex', 'claudeAgent']);
+  });
+
+  it('does not restore explicitly disabled defaults from either settings format', () => {
+    for (const settings of [
+      { providerInstances: { codex: { driver: 'codex', enabled: false }, claudeAgent: { driver: 'claudeAgent', config: { enabled: false } } } },
+      { providers: { codex: { enabled: false }, claudeAgent: { enabled: false } } },
+    ]) {
+      expect(discoverT3CodeProviders(fixture(settings).settingsPath)).toEqual([]);
+    }
   });
 
   it('resolves custom settings and CLI aliases', () => {
@@ -160,7 +182,7 @@ describe('T3 Code native plugin installation', () => {
     writeFileSync(join(claudeHome, 'settings.json'), '{"enabledPlugins":{"other@marketplace":true},"permissions":{"allow":["Read"]}}');
     writeFileSync(settingsPath, JSON.stringify({ providerInstances: {
       codex: { driver: 'codex', environment: [{ name: 'T3_TEST_DRIVER', value: 'codex' }], config: { binaryPath: command, homePath: codexHome, shadowHomePath: join(directory, 'never-write-shadow'), launchArgs: '--config model="keep-model"' } },
-      claude: { driver: 'claudeAgent', environment: [{ name: 'T3_TEST_DRIVER', value: 'claude' }], config: { binaryPath: command, homePath: claudeHome } },
+      claudeAgent: { driver: 'claudeAgent', environment: [{ name: 'T3_TEST_DRIVER', value: 'claude' }], config: { binaryPath: command, homePath: claudeHome } },
     }, futureSetting: { keep: true } }));
     const before = readFileSync(settingsPath, 'utf-8');
     const ambientHome = process.env.CODEX_HOME;
@@ -191,6 +213,31 @@ describe('T3 Code native plugin installation', () => {
       expect(removed.enabledPlugins['claude-mem@thedotmack']).toBe(false);
       expect(removed.enabledPlugins['other@marketplace']).toBe(true);
       expect(removed.permissions).toEqual({ allow: ['Read'] });
+      expect(readFileSync(settingsPath, 'utf-8')).toBe(before);
+    } finally { logSpy.mockRestore(); }
+  });
+
+  it.skipIf(process.platform === 'win32')('installs the implicit Claude provider when Codex is disabled (#5262)', async () => {
+    const { directory, settingsPath } = fixture({ providerInstances: { codex: { driver: 'codex', enabled: false } } });
+    const { command, log } = nativeCli(directory);
+    const claude = join(directory, 'claude');
+    copyFileSync(command, claude);
+    chmodSync(claude, 0o755);
+    const homePath = join(directory, 'claude-home');
+    const environment = {
+      ...process.env,
+      PATH: `${directory}:${process.env.PATH}`,
+      CLAUDE_CONFIG_DIR: homePath,
+      T3_TEST_DRIVER: 'claude',
+    };
+    const before = readFileSync(settingsPath, 'utf-8');
+    const logSpy = spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      expect(await installT3Code(repository, { settingsPath, environment })).toBe(0);
+      expect(t3CodeStatus({ settingsPath, environment })).toBe(0);
+      const calls = readFileSync(log, 'utf-8').trim().split('\n').map(line => JSON.parse(line));
+      expect(calls.every(call => call.home === homePath)).toBe(true);
+      expect(calls.some(call => call.args[1] === 'install')).toBe(true);
       expect(readFileSync(settingsPath, 'utf-8')).toBe(before);
     } finally { logSpy.mockRestore(); }
   });
@@ -251,7 +298,7 @@ describe('T3 Code native plugin installation', () => {
     const homePath = join(directory, 'claude');
     const plugins = join(homePath, 'plugins');
     mkdirSync(plugins, { recursive: true });
-    writeFileSync(settingsPath, JSON.stringify({ providers: { claudeAgent: { binaryPath: command, homePath } } }));
+    writeFileSync(settingsPath, JSON.stringify({ providers: { codex: { enabled: false }, claudeAgent: { binaryPath: command, homePath } } }));
     writeFileSync(join(plugins, 'known_marketplaces.json'), JSON.stringify({
       thedotmack: { source: { source: 'github', repo: 'thedotmack/claude-mem' }, installLocation: join(directory, 'old-bundle') },
       other: { installLocation: '/keep-other-marketplace' },
@@ -274,7 +321,7 @@ describe('T3 Code native plugin installation', () => {
     const { directory, settingsPath } = fixture({});
     const homePath = join(directory, 'claude');
     mkdirSync(join(homePath, 'plugins'), { recursive: true });
-    writeFileSync(settingsPath, JSON.stringify({ providers: { claudeAgent: { homePath } } }));
+    writeFileSync(settingsPath, JSON.stringify({ providers: { codex: { enabled: false }, claudeAgent: { homePath } } }));
     writeFileSync(join(homePath, 'settings.json'), '{"enabledPlugins":{"claude-mem@thedotmack":true}}');
     writeFileSync(join(homePath, 'plugins', 'known_marketplaces.json'), JSON.stringify({ thedotmack: { installLocation: repository } }));
     const spawn = () => ({ status: 0, stdout: JSON.stringify([{ id: 'claude-mem@thedotmack', scope: 'user', installPath: join(directory, 'deleted-cache'), readFromFolder: join(repository, 'plugin') }]), stderr: '', pid: 0, output: [], signal: null });

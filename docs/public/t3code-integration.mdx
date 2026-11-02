@@ -19,7 +19,7 @@ Restart T3 Code and start a new thread in your project. If Codex prompts to trus
 
 ## What gets configured
 
-The installer reads `~/.t3/userdata/settings.json`, including both `providerInstances` and legacy `providers`. An explicit instance overrides the legacy entry for its default slot. Disabled providers are skipped.
+The installer reads `~/.t3/userdata/settings.json`, including both `providerInstances` and legacy `providers`. An explicit instance overrides the legacy entry for its default slot. Like T3 Code, the installer treats absent default Codex and Claude Code entries as enabled, even when other providers are configured. Explicitly disabled providers are skipped; disable a default provider in T3 Code if you do not want its native plugin configured.
 
 | T3 provider | Claude-Mem installation |
 | --- | --- |
